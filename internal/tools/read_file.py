@@ -15,6 +15,8 @@ class ReadFileTool:
     """读取本地文件内容的工具；仅允许在注入的 ``work_dir`` 及其子目录下访问。"""
 
     def __init__(self, work_dir: str) -> None:
+        # 构造函数，初始化时接收工作区根目录（work_dir），
+        # 所有文件读取操作都将被限定在该目录及其子目录下，确保安全性。
         self._work_dir = work_dir
 
     def Name(self) -> str:

@@ -27,6 +27,8 @@ def Main() -> None:
     from internal.provider.openai import NewZhipuOpenAIProvider
     from internal.tools.read_file import NewReadFileTool
     from internal.tools.registry import NewRegistry
+    from internal.tools.bash import NewBashTool
+    from internal.tools.write_file import NewWriteFileTool
 
     # 1. 工作区物理边界
     work_dir = os.getcwd()
@@ -39,6 +41,8 @@ def Main() -> None:
 
     # 4. 挂载 ReadFile 工具
     registry.Register(NewReadFileTool(work_dir))
+    registry.Register(NewBashTool(work_dir))
+    registry.Register(NewWriteFileTool(work_dir))
 
     # 5. 核心引擎（任务简单，关闭慢思考以加快速度）
     eng = NewAgentEngine(
@@ -49,7 +53,10 @@ def Main() -> None:
     )
 
     prompt = (
-        "请调用工具读取一下当前工作区目录下 hello.txt 文件的内容，"
+        "请帮我执行以下操作：" 
+        "1. 用 bash 查看一下我当前电脑的 python 版本。" 
+        """2. 帮我写一个简单的 helloworld.py 文件，输出 "Hello, python-tiny-claw!"。""" 
+        "3. 用 bash 编译并运行这个 python 文件，确认它能正常工作。"
     )
 
     try:
