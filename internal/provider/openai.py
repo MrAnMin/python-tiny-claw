@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from cgitb import lookup
 import json
 import os
 from typing import Any, List, Optional
 
 from openai import OpenAI
 
+import logging
 from internal.schema.message import Message, Role, ToolCall, ToolDefinition
 
+logger = logging.getLogger(__name__)
 
 def NewZhipuOpenAIProvider(model: str) -> OpenAIProvider:
     """构造函数：基于官方 OpenAI Python SDK，指向智谱兼容端点。"""
@@ -50,7 +53,7 @@ class OpenAIProvider:
         # 【慢思考机制支撑】仅当存在工具定义时才挂载 Tools
         if openai_tools:
             kwargs["tools"] = openai_tools
-
+        logger.info("[Provider] 请求 OpenAI API 的参数为: %s", kwargs)
         try:
             resp = self._client.chat.completions.create(**kwargs)
         except Exception as exc:
@@ -60,6 +63,7 @@ class OpenAIProvider:
             raise RuntimeError("API 返回了空的 Choices")
 
         choice = resp.choices[0].message
+        logger.info("[Provider] 请求 OpenAI API 的响应为: %s", choice)
         return _OpenAIChoiceToMessage(choice)
 
 
