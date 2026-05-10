@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, List
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, List, Tuple
 
 from internal.provider.interface import LLMProvider
-from internal.schema.message import Message, Role
+from internal.schema.message import Message, Role, ToolCall
 from internal.tools.registry import Registry
 
 logger = logging.getLogger(__name__)
@@ -122,32 +123,49 @@ class AgentEngine:
                 logger.info("[Engine] 模型未请求调用工具，任务宣告完成。")
                 break
 
-            logger.info("[Engine] 模型请求调用 %d 个工具...", len(tool_calls))
+            logger.info(
+                "[Engine] 模型请求并发调用 %d 个工具...",
+                len(tool_calls),
+            )
 
-            # 针对每个工具调用请求，依次执行并记录结果
-            for tool_call in tool_calls:
+            def RunOneToolCall(item: Tuple[int, ToolCall]) -> Message:
+                idx, call = item
                 logger.info(
-                    "  -> 🛠️ 执行工具: %s, 参数: %s",
-                    tool_call.name,
-                    tool_call.arguments,
+                    "  -> [Py-%d] 🛠️ 触发并行执行: %s (参数: %s)",
+                    idx,
+                    call.name,
+                    call.arguments,
                 )
-
-                result = self._registry.Execute(ctx, tool_call)
-
+                result = self._registry.Execute(ctx, call)
                 if result.is_error:
-                    logger.info("  -> ❌ 工具执行报错: %s", result.output)
+                    logger.info(
+                        "  -> [Py-%d] ❌ 工具执行报错: %s",
+                        idx,
+                        result.output,
+                    )
                 else:
                     out_bytes = len(result.output.encode("utf-8"))
-                    logger.info("  -> ✅ 工具执行成功 (返回 %d 字节)", out_bytes)
-
-                # 将工具执行的观察结果 (Observation) 封装为 User Message 并追加到上下文
-                # tool_call_id 必须携带，以维系大模型推理链
-                observation_msg = Message(
+                    logger.info(
+                        "  -> [Py-%d] ✅ 工具执行成功 (返回 %d 字节)",
+                        idx,
+                        out_bytes,
+                    )
+                return Message(
                     role=Role.User,
                     content=result.output,
-                    tool_call_id=tool_call.id,
+                    tool_call_id=call.id,
                 )
-                context_history.append(observation_msg)
+
+            max_workers = max(1, len(tool_calls))
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                observation_msgs = list(
+                    pool.map(RunOneToolCall, enumerate(tool_calls)),
+                )
+
+            logger.info(
+                "[Engine] 所有并发工具执行完毕，开始聚合观察结果 (Observation)...",
+            )
+            context_history.extend(observation_msgs)
 
 
 def NewAgentEngine(
