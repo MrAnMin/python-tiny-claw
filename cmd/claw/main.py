@@ -33,6 +33,7 @@ def Main() -> None:
 
     # 1. 工作区物理边界
     work_dir = os.getcwd()
+    work_dir += "/workspace"
 
     # 2. 真实 Provider（智谱 GLM，OpenAI 适配器）
     llm_provider: LLMProvider = NewZhipuOpenAIProvider("glm-4.5-air")
@@ -51,13 +52,11 @@ def Main() -> None:
         provider=llm_provider,
         registry=registry,
         work_dir=work_dir,
-        enable_thinking=True,
+        enable_thinking=False,
     )
 
     prompt = (
-        "我当前目录下有 a.txt, b.txt, c.txt 三个文件。"
-        "为了节省时间，请你同时一次性读取这三个文件，并将它们的内容综合起来，告诉我它们分别记录了什么领域的信息。"
-        "注意，如果发现有工具可以实现，请优先使用工具实现，而不是自己编写代码实现"
+        "我需要在当前目录下新建一个 代码文件，文件名自定，提供一个简单的 http ping 接口。 "
     )
     try:
         eng.Run(None, prompt)

@@ -4,13 +4,25 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, List, Tuple
+from typing import Any, List, Optional, Tuple
 
+from internal.context.composer import NewPromptComposer, PromptComposer
+from internal.engine.reporter import Reporter
 from internal.provider.interface import LLMProvider
 from internal.schema.message import Message, Role, ToolCall
 from internal.tools.registry import Registry
 
 logger = logging.getLogger(__name__)
+
+_REPORTER_PREVIEW_MAX_BYTES = 200
+
+
+def _TruncateForReporter(output: str, max_bytes: int = _REPORTER_PREVIEW_MAX_BYTES) -> str:
+    """供 Reporter 展示的缩略输出（与 Go 侧按字节截断语义一致）；完整内容仍写入 observation。"""
+    data = output.encode("utf-8")
+    if len(data) <= max_bytes:
+        return output
+    return data[:max_bytes].decode("utf-8", errors="replace") + "... (已截断)"
 
 
 class AgentEngine:
@@ -30,27 +42,29 @@ class AgentEngine:
         self.work_dir = work_dir
         # 慢思考模式开关
         self.enable_thinking = enable_thinking
+        # 动态 System Prompt：内核 + AGENTS.md + .claw/skills
+        self._composer: PromptComposer = NewPromptComposer(work_dir)
 
-    def Run(self, ctx: Any, user_prompt: str) -> None:
+    def Run(
+        self,
+        ctx: Any,
+        user_prompt: str,
+        reporter: Optional[Reporter] = None,
+    ) -> None:
         """
         启动 Agent 的生命周期。失败时抛出异常（对应 Go 的 error）。
         Args:
             ctx: 运行上下文对象（可用于超时/取消，暂未用）
             user_prompt: 用户输入的提示词
+            reporter: 可选的事件出口；为 None 时 CLI 沿用 print 等行为
         """
         logger.info("[Engine] 引擎启动，锁定工作区: %s", self.work_dir)
         logger.info("[Engine] 慢思考模式 (Thinking Phase): %s", self.enable_thinking)
 
-        # 1. 初始化会话的 Context (上下文内存、历史消息列表)
-        # 在真实的场景中，这里会由动态 Prompt 组装器加载 AGENTS.md。当前我们先硬编码一个系统提示词。
+        # 1. 初始化会话：由 PromptComposer 组装 System 消息，再追加用户输入
+        system_msg = self._composer.Build()
         context_history: List[Message] = [
-            Message(
-                role=Role.System,
-                content=(
-                    "You are python-tiny-claw, an expert coding assistant. "
-                    "You have full access to tools in the workspace."
-                ),
-            ),
+            system_msg,
             Message(role=Role.User, content=user_prompt),
         ]
 
@@ -77,6 +91,9 @@ class AgentEngine:
             if self.enable_thinking:
                 logger.info("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...")
 
+                if reporter is not None:
+                    reporter.OnThinking(ctx)
+
                 # 关键机制：将 available_tools 置为 None，大模型只能输出纯文本的思考过程
                 try:
                     think_resp = self._provider.Generate(
@@ -88,7 +105,8 @@ class AgentEngine:
 
                 # 如果模型在慢思考阶段有内容输出，则追加到对话上下文
                 if think_resp.content:
-                    print(f"🧠 [内部思考 Trace]: {think_resp.content}")
+                    if reporter is None:
+                        print(f"🧠 [内部思考 Trace]: {think_resp.content}")
                     context_history.append(think_resp)
 
             # ================================================================
@@ -109,9 +127,11 @@ class AgentEngine:
             # 将模型生成的 Action 回复追加到上下文
             context_history.append(action_resp)
 
-            # 如果有纯文本内容输出，直接展示给用户
             if action_resp.content:
-                print(f"🤖 [对外回复]: {action_resp.content}")
+                if reporter is not None:
+                    reporter.OnMessage(ctx, action_resp.content)
+                else:
+                    print(f"🤖 [对外回复]: {action_resp.content}")
 
             # ================================================================
             # 工具调用与执行逻辑（Observation）
@@ -130,6 +150,9 @@ class AgentEngine:
 
             def RunOneToolCall(item: Tuple[int, ToolCall]) -> Message:
                 idx, call = item
+                if reporter is not None:
+                    reporter.OnToolCall(ctx, call.name, call.arguments)
+
                 logger.info(
                     "  -> [Py-%d] 🛠️ 触发并行执行: %s (参数: %s)",
                     idx,
@@ -150,6 +173,11 @@ class AgentEngine:
                         idx,
                         out_bytes,
                     )
+
+                if reporter is not None:
+                    display_output = _TruncateForReporter(result.output)
+                    reporter.OnToolResult(ctx, call.name, display_output, result.is_error)
+
                 return Message(
                     role=Role.User,
                     content=result.output,
